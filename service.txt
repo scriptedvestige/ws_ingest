@@ -1,0 +1,33 @@
+sudo nano /etc/systemd/system/ecowitt_ingest.service
+
+-----
+
+[Unit]
+Description=Ecowitt Data Ingest
+After=network.target
+
+[Service]
+User=prax
+Group=prax
+WorkingDirectory=/opt/ecowitt
+ExecStart=/opt/ecowitt/venv/bin/uvicorn api:app --host 0.0.0.0 --port 44380
+Restart=always
+RestartSec=5
+Environment="PATH=/opt/ecowitt/venv/bin"
+
+[Install]
+WantedBy=multi-user.target
+
+-----
+# Create service
+sudo systemctl daemon-reload
+sudo systemctl enable ecowitt_ingest.service
+sudo systemctl start ecowitt_ingest.service
+sudo systemctl status ecowitt_ingest.service
+
+# Check service logs
+sudo journalctl -u ecowitt_ingest.service
+sudo journalctl -u ecowitt_ingest.service -f (live)
+
+# Check service status
+sudo systemctl status ecowitt_ingest.service

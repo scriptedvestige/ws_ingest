@@ -1,0 +1,1 @@
+CREATE TABLE office_obs (time TIMESTAMPTZ NOT NULL, temp2f REAL, humidity2 REAL, PRIMARY KEY (time));
