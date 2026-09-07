@@ -5,6 +5,7 @@ from fastapi.responses import PlainTextResponse
 from pathlib import Path
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+from psycopg2 import sql
 import psycopg2
 import process
 import logging
@@ -23,15 +24,6 @@ db_password = os.getenv("DB_PASS")
 # Start API
 app = FastAPI(title="Weather Ingest", version="0.1.0")
 
-# Connect to database
-db_conn = psycopg2.connect(
-    dbname=db_name,
-    user=db_user,
-    password=db_password,
-    host=db_host,
-    port=db_port
-)
-
 # Create parser object
 parser = process.Parser()
 
@@ -42,61 +34,96 @@ logging.basicConfig(
 )
 logger = logging.getLogger("weather-ingest")
 
-# Save raw POSTS
-DATA_FILE = Path("/opt/ecowitt/raw_posts.json")
-
 # Save errors
 ERROR_FILE = Path("/opt/ecowitt/error.log")
+
+# Touch this file to dump raw payloads while adding new sensors; remove when done
+DEBUG_FLAG = Path("/opt/ecowitt/DEBUG_RAW")
+DEBUG_FILE = Path("/opt/ecowitt/raw_posts.jsonl")
+
+# --- DB connection with lazy reconnect --- #
+_db_conn = None
+
+def get_conn():
+    global _db_conn
+    if _db_conn is None or _db_conn.closed:
+        _db_conn = psycopg2.connect(
+            dbname=db_name,
+            user=db_user,
+            password=db_password,
+            host=db_host,
+            port=db_port,
+        )
+    return _db_conn
+
+
+def log_error(timestamp, message):
+    with open(ERROR_FILE, 'a') as log:
+        log.write(f"{timestamp}: {message}\n")
+
 
 # Check API status
 @app.get("/health")
 def health():
-    return {"status": "ok", "ts":datetime.now(timezone.utc).isoformat()}
+    try:
+        conn = get_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        return {"status": "ok", "ts": datetime.now(timezone.utc).isoformat()}
+    except Exception as e:
+        logger.error("Health check DB failure: %s", e)
+        return {"status": "error", "detail": str(e), "ts": datetime.now(timezone.utc).isoformat()}
+
 
 # Endpoint for Ecowitt console to push data to
 @app.post("/v1/ecowitt")
-async def ingest_ecowitt(request:Request):
+async def ingest_ecowitt(request: Request):
     """
-    Receiveds Ecowitt-style HTTP POST payloads.
+    Receives Ecowitt-style HTTP POST payloads.
     """
-    # Listen for the payload
+    now = datetime.now(timezone.utc)
+
     form = await request.form()
     payload = dict(form)
 
+    # Optional raw payload capture, toggled by presence of DEBUG_FLAG
+    if DEBUG_FLAG.exists():
+        with open(DEBUG_FILE, 'a') as f:
+            json.dump(payload, f, default=str)
+            f.write("\n")
+
     # Grab timestamp from data payload
     ts_str = payload.get("dateutc")
-    timestamp = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    try:
+        timestamp = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError) as e:
+        log_error(now, f"Bad/missing dateutc={ts_str!r}: {e}")
+        return {"status": "Error", "ts": now.isoformat()}
 
-    # Split payload into data for each table
     grouped = parser.group_payload(payload=payload)
 
-    # Insert the proper data into its respective table
     try:
-        with db_conn.cursor() as cur:
+        conn = get_conn()
+        with conn.cursor() as cur:
             for table, data in grouped.items():
                 if not data:
                     continue
                 data["time"] = timestamp
                 columns = list(data.keys())
                 values = list(data.values())
-                placeholders = ",".join(["%s"] * len(values))
-                sql = f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders})"
-                cur.execute(sql, values)
-            db_conn.commit()
+                query = sql.SQL("INSERT INTO {table} ({fields}) VALUES ({placeholders})").format(
+                    table=sql.Identifier(table),
+                    fields=sql.SQL(',').join(map(sql.Identifier, columns)),
+                    placeholders=sql.SQL(',').join(sql.Placeholder() * len(values)),
+                )
+                cur.execute(query, values)
+        conn.commit()
     except Exception as e:
-        with open(ERROR_FILE, 'a') as log:
-            log.write(f"{timestamp}: {str(e)}")
-            return {"status": "Error", "ts":datetime.now(timezone.utc).isoformat()}
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        log_error(timestamp, str(e))
+        return {"status": "Error", "ts": datetime.now(timezone.utc).isoformat()}
 
-    # Log payload
-    # logger.info("Ecowitt payload received: %s", payload)
-
-    """
-    with open(DATA_FILE, 'a') as file:
-    #    json.dump(payload, file, default=str)
-        # Processed data
-        json.dump(grouped, file, default=str)
-    """
-        
-    # If Ecowitt wants a plain-text response
     return PlainTextResponse("OK")
