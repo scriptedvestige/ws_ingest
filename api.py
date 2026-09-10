@@ -39,7 +39,7 @@ ERROR_FILE = Path("/opt/ecowitt/error.log")
 
 # Touch this file to dump raw payloads while adding new sensors; remove when done
 DEBUG_FLAG = Path("/opt/ecowitt/DEBUG_RAW")
-DEBUG_FILE = Path("/opt/ecowitt/raw_posts.jsonl")
+DEBUG_FILE = Path("/opt/ecowitt/raw_posts.json")
 
 # --- DB connection with lazy reconnect --- #
 _db_conn = None
