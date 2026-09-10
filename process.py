@@ -44,7 +44,8 @@ class Parser:
             "lightning_events": [
                 "lightning_num",
                 "lightning_time",
-                "lightning"
+                "lightning",
+                "wh57batt"
             ]
         }
 
